@@ -952,6 +952,7 @@ impl AutoUpdater {
             "linux" => {
                 install_release_linux(&installer_dir, &target_path, channel, running_app_path).await
             }
+            #[cfg(target_os = "windows")]
             "windows" => install_release_windows(&target_path).await,
             unsupported_os => anyhow::bail!("not supported: {unsupported_os}"),
         }
@@ -1310,17 +1311,17 @@ async fn cleanup_windows() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+const WINDOWS_INSTALLER_ARGUMENTS: &str = "/verysilent /update=true /MERGETASKS=!desktopicon";
+
+#[cfg(target_os = "windows")]
 async fn install_release_windows(downloaded_installer: &Path) -> Result<Option<PathBuf>> {
-    let mut cmd = new_command(downloaded_installer);
-    cmd.arg("/verysilent")
-        .arg("/update=true")
-        .arg("/MERGETASKS=!desktopicon");
-    let output = cmd.output().await?;
-    anyhow::ensure!(
-        output.status.success(),
-        "failed to start installer: {:?}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let exit_code = smol::unblock({
+        let downloaded_installer = downloaded_installer.to_path_buf();
+        move || run_without_inheriting_handles(&downloaded_installer, WINDOWS_INSTALLER_ARGUMENTS)
+    })
+    .await?;
+    anyhow::ensure!(exit_code == 0, "installer exited with code {exit_code}");
     // We return the path to the update helper program, because it will
     // perform the final steps of the update process, copying the new binary,
     // deleting the old one, and launching the new binary.
@@ -1330,6 +1331,82 @@ async fn install_release_windows(downloaded_installer: &Path) -> Result<Option<P
         .join("tools")
         .join("auto_update_helper.exe");
     Ok(Some(helper_path))
+}
+
+/// Runs `program` until it exits and returns its exit code. `arguments` is
+/// appended to the command line verbatim.
+///
+/// This bypasses `std::process::Command` on purpose. To keep inheritable stdio
+/// handles from leaking into unrelated children, std holds a process-wide lock
+/// across `CreateProcessW`. Antivirus software can stall the creation of a
+/// freshly downloaded executable for many seconds, and for all of that time
+/// every other process spawn in Zed, including ones on the main thread, would
+/// wait for that lock. The child inherits no handles here, so the lock is not
+/// needed.
+#[cfg(target_os = "windows")]
+fn run_without_inheriting_handles(program: &Path, arguments: &str) -> Result<u32> {
+    use std::os::windows::{
+        ffi::OsStrExt as _,
+        io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle},
+    };
+    use windows::{
+        Win32::{
+            Foundation::{HANDLE, WAIT_OBJECT_0},
+            System::Threading::{
+                CREATE_NO_WINDOW, CreateProcessW, GetExitCodeProcess, INFINITE,
+                PROCESS_INFORMATION, STARTUPINFOW, WaitForSingleObject,
+            },
+        },
+        core::{HSTRING, PCWSTR, PWSTR},
+    };
+
+    let application_name = HSTRING::from(program.as_os_str());
+    let mut command_line: Vec<u16> = "\""
+        .encode_utf16()
+        .chain(program.as_os_str().encode_wide())
+        .chain("\" ".encode_utf16())
+        .chain(arguments.encode_utf16())
+        .chain(std::iter::once(0))
+        .collect();
+    let startup_info = STARTUPINFOW {
+        cb: size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut process_information = PROCESS_INFORMATION::default();
+    // SAFETY: every pointer refers to a NUL-terminated buffer or an
+    // initialized struct that outlives the call.
+    unsafe {
+        CreateProcessW(
+            &application_name,
+            Some(PWSTR(command_line.as_mut_ptr())),
+            None,
+            None,
+            false,
+            CREATE_NO_WINDOW,
+            None,
+            PCWSTR::null(),
+            &startup_info,
+            &mut process_information,
+        )
+    }
+    .with_context(|| format!("failed to start {}", program.display()))?;
+    // SAFETY: `CreateProcessW` succeeded, so both handles are valid and ours
+    // to close.
+    let process = unsafe { OwnedHandle::from_raw_handle(process_information.hProcess.0) };
+    let _thread = unsafe { OwnedHandle::from_raw_handle(process_information.hThread.0) };
+
+    let process_handle = HANDLE(process.as_raw_handle());
+    // SAFETY: `process` keeps the handle open until this function returns.
+    let wait_result = unsafe { WaitForSingleObject(process_handle, INFINITE) };
+    if wait_result != WAIT_OBJECT_0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("failed to wait for {} to exit", program.display()));
+    }
+    let mut exit_code = 0;
+    // SAFETY: as above, and `exit_code` is a valid out pointer.
+    unsafe { GetExitCodeProcess(process_handle, &mut exit_code) }
+        .with_context(|| format!("failed to read the exit code of {}", program.display()))?;
+    Ok(exit_code)
 }
 
 pub async fn finalize_auto_update_on_quit() {
@@ -1616,6 +1693,36 @@ mod tests {
 
         let downloaded_len = std::fs::metadata(&target_path).unwrap().len();
         assert_eq!(downloaded_len, content_length as u64);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn command_interpreter() -> PathBuf {
+        PathBuf::from(env::var_os("SystemRoot").expect("SystemRoot is always set on Windows"))
+            .join("System32")
+            .join("cmd.exe")
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_run_without_inheriting_handles_returns_exit_code() {
+        let exit_code = run_without_inheriting_handles(&command_interpreter(), "/c exit 0");
+        assert_eq!(exit_code.unwrap(), 0);
+
+        let exit_code = run_without_inheriting_handles(&command_interpreter(), "/c exit 7");
+        assert_eq!(exit_code.unwrap(), 7);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_run_without_inheriting_handles_fails_for_missing_program() {
+        let directory = tempdir().unwrap();
+        let missing_program = directory.path().join("missing.exe");
+
+        let error = run_without_inheriting_handles(&missing_program, "").unwrap_err();
+        assert!(
+            error.to_string().contains("failed to start"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]
