@@ -1399,13 +1399,16 @@ impl Fs for RealFs {
         };
 
         let job_tracker = JobTracker::new(job_info, self.job_event_subscribers.clone());
-        let mut child = new_command("git")
+        let mut command = new_command("git");
+        command
             .current_dir(abs_work_directory)
             .args(["clone", "--progress", repo_url])
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
+            .kill_on_drop(true);
+        // Creating a process can block for seconds on Windows, and callers may
+        // run this on the main thread.
+        let mut child = self.executor.spawn(async move { command.spawn() }).await?;
         let stderr = child
             .stderr
             .take()

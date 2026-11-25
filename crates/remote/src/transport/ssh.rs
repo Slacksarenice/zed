@@ -354,11 +354,12 @@ impl MasterProcess {
 impl MasterProcess {
     const CONNECTION_ESTABLISHED_MAGIC: &str = "ZED_SSH_CONNECTION_ESTABLISHED";
 
-    pub fn new(
+    pub async fn new(
         askpass_script_path: &std::ffi::OsStr,
         askpass_socket_path: &std::ffi::OsStr,
         additional_args: Vec<String>,
         destination_args: Vec<String>,
+        executor: &gpui::BackgroundExecutor,
     ) -> Result<Self> {
         // On Windows, `ControlMaster` and `ControlPath` are not supported:
         // https://github.com/PowerShell/Win32-OpenSSH/issues/405
@@ -382,7 +383,11 @@ impl MasterProcess {
             .args(destination_args)
             .arg(remote_command);
 
-        let process = master_process.spawn()?;
+        // Creating a process can block for seconds on Windows, and callers run
+        // on the main thread.
+        let process = executor
+            .spawn(async move { master_process.spawn() })
+            .await?;
 
         Ok(MasterProcess { process })
     }
@@ -681,26 +686,26 @@ impl RemoteConnection for SshRemoteConnection {
                 .ssh_command(self.ssh_shell_kind, "env", &proxy_args, false)
         };
 
-        let ssh_proxy_process = match ssh_command
-            // IMPORTANT: we kill this process when we drop the task that uses it.
-            .kill_on_drop(true)
-            .spawn()
-        {
-            Ok(process) => process,
-            Err(error) => {
-                return Task::ready(Err(
-                    anyhow::Error::new(error).context("failed to spawn remote server")
-                ));
-            }
-        };
+        // IMPORTANT: we kill this process when we drop the task that uses it.
+        ssh_command.kill_on_drop(true);
 
-        super::handle_rpc_messages_over_child_process_stdio(
-            ssh_proxy_process,
-            incoming_tx,
-            outgoing_rx,
-            connection_activity_tx,
-            cx,
-        )
+        cx.spawn(async move |cx| {
+            // Creating a process can block for seconds on Windows, so it must
+            // not happen on the main thread.
+            let ssh_proxy_process = cx
+                .background_spawn(async move { ssh_command.spawn() })
+                .await
+                .context("failed to spawn remote server")?;
+
+            super::handle_rpc_messages_over_child_process_stdio(
+                ssh_proxy_process,
+                incoming_tx,
+                outgoing_rx,
+                connection_activity_tx,
+                cx,
+            )
+            .await
+        })
     }
 
     fn path_style(&self) -> PathStyle {
@@ -907,7 +912,9 @@ impl SshRemoteConnection {
                 askpass.socket_path().as_ref(),
                 connection_options.additional_args(),
                 connection_options.ssh_destination_args(),
-            )?;
+                cx.background_executor(),
+            )
+            .await?;
 
             let result = select_biased! {
                 result = askpass.run(Some(SSH_CONNECTION_PROMPT_TIMEOUT)).fuse() => {
