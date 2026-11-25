@@ -115,14 +115,94 @@ impl Command {
     }
 
     pub async fn output(&mut self) -> std::io::Result<std::process::Output> {
-        self.0.output().await
+        #[cfg(target_os = "windows")]
+        {
+            self.create_process_on_blocking_thread(|command| command.output())
+                .await
+                .await
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.0.output().await
+        }
     }
 
     pub async fn status(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        self.0.status().await
+        #[cfg(target_os = "windows")]
+        {
+            self.create_process_on_blocking_thread(|command| command.status())
+                .await
+                .await
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.0.status().await
+        }
+    }
+
+    /// Runs `create`, which is expected to create the process, on a blocking
+    /// thread and returns what it produced.
+    ///
+    /// Creating a process on Windows can take seconds: antivirus may scan the
+    /// executable first, and std serializes every `CreateProcessW` call in the
+    /// process behind one lock, so a single slow launch stalls all the others.
+    /// Callers are often on the main thread, which must not wait for that.
+    #[cfg(target_os = "windows")]
+    async fn create_process_on_blocking_thread<T: Send + 'static>(
+        &mut self,
+        create: impl FnOnce(&mut smol::process::Command) -> T + Send + 'static,
+    ) -> T {
+        // The command has to move to the other thread. If this future is
+        // dropped before it comes back, `self` keeps the inert placeholder.
+        let mut command = std::mem::replace(&mut self.0, smol::process::Command::new(""));
+        let (command, created) = smol::unblock(move || {
+            let created = create(&mut command);
+            (command, created)
+        })
+        .await;
+        self.0 = command;
+        created
     }
 
     pub fn get_program(&self) -> &OsStr {
         self.0.get_program()
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn test_output_collects_stdout_and_exit_code() {
+        let mut command = new_command("cmd.exe");
+        command.args(["/c", "echo hello && exit 3"]);
+
+        let output = smol::block_on(command.output()).expect("failed to run cmd.exe");
+
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello");
+    }
+
+    #[test]
+    fn test_command_can_run_again_after_returning_from_the_blocking_thread() {
+        let mut command = new_command("cmd.exe");
+        command.args(["/c", "exit 4"]);
+
+        let status = smol::block_on(command.status()).expect("failed to run cmd.exe");
+        assert_eq!(status.code(), Some(4));
+
+        let output = smol::block_on(command.output()).expect("failed to run cmd.exe again");
+        assert_eq!(output.status.code(), Some(4));
+        assert_eq!(command.get_program(), OsStr::new("cmd.exe"));
+    }
+
+    #[test]
+    fn test_output_reports_a_missing_program() {
+        let mut command = new_command("zed-test-program-that-does-not-exist.exe");
+
+        let error = smol::block_on(command.output()).expect_err("spawn should fail");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 }
