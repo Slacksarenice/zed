@@ -42,27 +42,24 @@ impl StdioTransport {
             command.current_dir(working_directory);
         }
 
+        let spawn_server = move || {
+            Child::spawn(
+                command,
+                std::process::Stdio::piped(),
+                std::process::Stdio::piped(),
+                std::process::Stdio::piped(),
+            )
+        };
         // See `Child::spawn` for why only Windows creates the process in the
         // background.
         #[cfg(windows)]
-        let mut server = cx
+        let spawned = cx
             .background_executor()
-            .spawn(async move {
-                Child::spawn(
-                    command,
-                    std::process::Stdio::piped(),
-                    std::process::Stdio::piped(),
-                    std::process::Stdio::piped(),
-                )
-            })
-            .await?;
+            .spawn(async move { spawn_server() })
+            .await;
         #[cfg(not(windows))]
-        let mut server = Child::spawn(
-            command,
-            std::process::Stdio::piped(),
-            std::process::Stdio::piped(),
-            std::process::Stdio::piped(),
-        )?;
+        let spawned = spawn_server();
+        let mut server = spawned?;
 
         let stdin = server.stdin.take().unwrap();
         let stdout = server.stdout.take().unwrap();

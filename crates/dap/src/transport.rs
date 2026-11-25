@@ -574,17 +574,17 @@ impl TcpTransport {
             command.args(&binary.arguments);
             command.envs(&binary.envs);
 
+            let spawn_adapter =
+                move || Child::spawn(command, Stdio::null(), Stdio::piped(), Stdio::piped());
             // See `Child::spawn` for why only Windows creates the process in
             // the background.
             #[cfg(windows)]
             let spawned = cx
                 .background_executor()
-                .spawn(async move {
-                    Child::spawn(command, Stdio::null(), Stdio::piped(), Stdio::piped())
-                })
+                .spawn(async move { spawn_adapter() })
                 .await;
             #[cfg(not(windows))]
-            let spawned = Child::spawn(command, Stdio::null(), Stdio::piped(), Stdio::piped());
+            let spawned = spawn_adapter();
             let mut p = spawned.with_context(|| "failed to start debug adapter.")?;
 
             stdout_task = p.stdout.take().map(|stdout| {
@@ -733,17 +733,18 @@ impl StdioTransport {
         command.args(&binary.arguments);
         command.envs(&binary.envs);
 
+        let spawn_adapter =
+            move || Child::spawn(command, Stdio::piped(), Stdio::piped(), Stdio::piped());
         // See `Child::spawn` for why only Windows creates the process in the
         // background.
         #[cfg(windows)]
-        let mut process =
-            cx.background_executor()
-                .spawn(async move {
-                    Child::spawn(command, Stdio::piped(), Stdio::piped(), Stdio::piped())
-                })
-                .await?;
+        let spawned = cx
+            .background_executor()
+            .spawn(async move { spawn_adapter() })
+            .await;
         #[cfg(not(windows))]
-        let mut process = Child::spawn(command, Stdio::piped(), Stdio::piped(), Stdio::piped())?;
+        let spawned = spawn_adapter();
+        let mut process = spawned?;
 
         let _stderr_task = process.stderr.take().map(|stderr| {
             cx.background_spawn(TransportDelegate::handle_adapter_log(

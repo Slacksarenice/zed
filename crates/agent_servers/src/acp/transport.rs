@@ -98,15 +98,17 @@ pub(super) async fn spawn_stdio(
     }) {
         child.current_dir(cwd);
     }
+    let spawn_child = move || Child::spawn(child, Stdio::piped(), Stdio::piped(), Stdio::piped());
     // See `Child::spawn` for why only Windows creates the process in the
     // background.
     #[cfg(windows)]
-    let mut child = cx
+    let spawned = cx
         .background_executor()
-        .spawn(async move { Child::spawn(child, Stdio::piped(), Stdio::piped(), Stdio::piped()) })
-        .await?;
+        .spawn(async move { spawn_child() })
+        .await;
     #[cfg(not(windows))]
-    let mut child = Child::spawn(child, Stdio::piped(), Stdio::piped(), Stdio::piped())?;
+    let spawned = spawn_child();
+    let mut child = spawned?;
 
     let stdout = child.stdout.take().context("Failed to take stdout")?;
     let stdin = child.stdin.take().context("Failed to take stdin")?;

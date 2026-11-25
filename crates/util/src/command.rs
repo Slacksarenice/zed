@@ -128,7 +128,8 @@ impl Command {
 }
 
 /// Runs `program` until it exits and returns its exit code, blocking the
-/// calling thread. `arguments` is appended to the command line verbatim.
+/// calling thread. `raw_arguments` is appended to the command line verbatim,
+/// so quoting is up to the caller.
 ///
 /// Unlike [`Command`], this does not go through `std::process::Command`, which
 /// holds a process-wide lock across `CreateProcessW` so that inheritable stdio
@@ -138,7 +139,7 @@ impl Command {
 /// lock meanwhile. The child inherits no handles here, so the lock is not
 /// needed.
 #[cfg(target_os = "windows")]
-pub fn run_without_inheriting_handles(program: &Path, arguments: &str) -> anyhow::Result<u32> {
+pub fn run_without_inheriting_handles(program: &Path, raw_arguments: &str) -> anyhow::Result<u32> {
     use anyhow::Context as _;
     use std::os::windows::{
         ffi::OsStrExt as _,
@@ -149,7 +150,7 @@ pub fn run_without_inheriting_handles(program: &Path, arguments: &str) -> anyhow
             Foundation::{HANDLE, WAIT_OBJECT_0},
             System::Threading::{
                 CREATE_NO_WINDOW, CreateProcessW, GetExitCodeProcess, INFINITE,
-                PROCESS_INFORMATION, STARTUPINFOW, WaitForSingleObject,
+                PROCESS_INFORMATION, STARTF_FORCEOFFFEEDBACK, STARTUPINFOW, WaitForSingleObject,
             },
         },
         core::{HSTRING, PCWSTR, PWSTR},
@@ -160,11 +161,14 @@ pub fn run_without_inheriting_handles(program: &Path, arguments: &str) -> anyhow
         .encode_utf16()
         .chain(program.as_os_str().encode_wide())
         .chain("\" ".encode_utf16())
-        .chain(arguments.encode_utf16())
+        .chain(raw_arguments.encode_utf16())
         .chain(std::iter::once(0))
         .collect();
     let startup_info = STARTUPINFOW {
         cb: size_of::<STARTUPINFOW>() as u32,
+        // A GUI program that never shows a window would otherwise leave the
+        // busy cursor on for several seconds.
+        dwFlags: STARTF_FORCEOFFFEEDBACK,
         ..Default::default()
     };
     let mut process_information = PROCESS_INFORMATION::default();
@@ -234,8 +238,10 @@ mod windows_tests {
         let missing_program = directory.path().join("missing.exe");
 
         let error = run_without_inheriting_handles(&missing_program, "").unwrap_err();
-        assert!(
-            error.to_string().contains("failed to start"),
+        let operating_system_error = error.downcast_ref::<windows::core::Error>();
+        assert_eq!(
+            operating_system_error.map(|error| error.code()),
+            Some(windows::Win32::Foundation::ERROR_FILE_NOT_FOUND.to_hresult()),
             "unexpected error: {error:#}"
         );
     }

@@ -569,22 +569,20 @@ impl LspAdapter for RustLspAdapter {
             .arg("--print-config-schema")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        let command_description = format!("{command:?}");
         // Creating a process can block for seconds on Windows, and this runs
-        // on the main thread. The command comes back for the log messages.
-        let (command, spawned) = cx
+        // on the main thread.
+        let spawned = cx
             .background_executor()
-            .spawn(async move {
-                let spawned = command.spawn();
-                (command, spawned)
-            })
+            .spawn(async move { command.spawn() })
             .await;
         let cmd = spawned
-            .map_err(|e| log::debug!("failed to spawn command {command:?}: {e}"))
+            .map_err(|e| log::debug!("failed to spawn command {command_description}: {e}"))
             .ok()?;
         let output = cmd
             .output()
             .await
-            .map_err(|e| log::debug!("failed to execute command {command:?}: {e}"))
+            .map_err(|e| log::debug!("failed to execute command {command_description}: {e}"))
             .ok()?;
         if !output.status.success() {
             return None;

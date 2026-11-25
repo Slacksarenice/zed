@@ -148,27 +148,24 @@ impl NativeRunningKernel {
             let mut cmd = kernel_specification.command(&connection_path)?;
             cmd.current_dir(&working_directory);
 
+            let spawn_kernel = move || {
+                util::process::Child::spawn(
+                    cmd,
+                    std::process::Stdio::piped(),
+                    std::process::Stdio::piped(),
+                    std::process::Stdio::piped(),
+                )
+            };
             // See `Child::spawn` for why only Windows creates the process in
             // the background.
             #[cfg(windows)]
-            let mut process = cx
+            let spawned = cx
                 .background_executor()
-                .spawn(async move {
-                    util::process::Child::spawn(
-                        cmd,
-                        std::process::Stdio::piped(),
-                        std::process::Stdio::piped(),
-                        std::process::Stdio::piped(),
-                    )
-                })
-                .await?;
+                .spawn(async move { spawn_kernel() })
+                .await;
             #[cfg(not(windows))]
-            let mut process = util::process::Child::spawn(
-                cmd,
-                std::process::Stdio::piped(),
-                std::process::Stdio::piped(),
-                std::process::Stdio::piped(),
-            )?;
+            let spawned = spawn_kernel();
+            let mut process = spawned?;
 
             let session_id = Uuid::new_v4().to_string();
 
