@@ -1760,14 +1760,19 @@ impl PyLspAdapter {
         let mut path = PathBuf::from(work_dir.as_ref());
         path.push("pylsp-venv");
         if !path.exists() {
-            util::command::new_command(python_path)
+            let mut command = util::command::new_command(python_path);
+            command
                 .arg("-m")
                 .arg("venv")
                 .arg("pylsp-venv")
-                .current_dir(work_dir)
-                .spawn()?
-                .output()
+                .current_dir(work_dir);
+            // Creating a process can block for seconds on Windows, and this
+            // can run on the main thread.
+            let child = delegate
+                .background_executor()
+                .spawn(async move { command.spawn() })
                 .await?;
+            child.output().await?;
         }
 
         Ok(path.into())
@@ -2518,8 +2523,16 @@ impl LspAdapter for RuffLspAdapter {
             .args(&["config", "--output-format", "json"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let cmd = command
-            .spawn()
+        // Creating a process can block for seconds on Windows, and this runs
+        // on the main thread. The command comes back for the log messages.
+        let (command, spawned) = cx
+            .background_executor()
+            .spawn(async move {
+                let spawned = command.spawn();
+                (command, spawned)
+            })
+            .await;
+        let cmd = spawned
             .map_err(|e| log::debug!("failed to spawn command {command:?}: {e}"))
             .ok()?;
         let output = cmd

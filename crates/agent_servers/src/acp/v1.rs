@@ -591,7 +591,7 @@ impl AcpConnection {
             outgoing,
             stderr,
             debug_log,
-        } = transport::spawn_stdio(&project, command, cx)?;
+        } = transport::spawn_stdio(&project, command, cx).await?;
         let mut child = transport::OwnedChild(child);
         let sessions = Rc::new(RefCell::new(HashMap::default()));
 

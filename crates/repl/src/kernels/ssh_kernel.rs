@@ -120,7 +120,13 @@ impl SshRunningKernel {
             command.args(&command_template.args);
             command.envs(&command_template.env);
 
-            let mut ssh_tunnel_process = command.spawn().context("failed to spawn ssh tunnel")?;
+            // Creating a process can block for seconds on Windows, and this
+            // task runs on the main thread.
+            let mut ssh_tunnel_process = cx
+                .background_executor()
+                .spawn(async move { command.spawn() })
+                .await
+                .context("failed to spawn ssh tunnel")?;
 
             let stderr = ssh_tunnel_process.stderr.take();
             cx.spawn(async move |_cx| {

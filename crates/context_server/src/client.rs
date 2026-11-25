@@ -176,7 +176,7 @@ impl Client {
     /// This function initializes a new Client by spawning a child process for the context server,
     /// setting up communication channels, and initializing handlers for input/output operations.
     /// It takes a server ID, binary information, and an async app context as input.
-    pub fn stdio(
+    pub async fn stdio(
         server_id: ContextServerId,
         binary: ModelContextServerBinary,
         working_directory: &Option<PathBuf>,
@@ -195,7 +195,7 @@ impl Client {
             .unwrap_or_else(String::new);
 
         let timeout = binary.timeout.map(Duration::from_secs);
-        let transport = Arc::new(StdioTransport::new(binary, working_directory, &cx)?);
+        let transport = Arc::new(StdioTransport::new(binary, working_directory, &cx).await?);
         Self::new(server_id, server_name.into(), transport, timeout, cx)
     }
 

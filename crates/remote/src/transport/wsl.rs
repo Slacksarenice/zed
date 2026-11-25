@@ -484,26 +484,27 @@ impl RemoteConnection for WslRemoteConnection {
             proxy_args.push("--reconnect".to_owned());
         }
 
-        let proxy_process =
-            match wsl_command_impl(&self.connection_options, "env", &proxy_args, true)
-                .kill_on_drop(true)
-                .spawn()
-            {
-                Ok(process) => process,
-                Err(error) => {
-                    return Task::ready(Err(
-                        anyhow::Error::new(error).context("failed to spawn remote server")
-                    ));
-                }
-            };
+        let mut proxy_command =
+            wsl_command_impl(&self.connection_options, "env", &proxy_args, true);
+        proxy_command.kill_on_drop(true);
 
-        super::handle_rpc_messages_over_child_process_stdio(
-            proxy_process,
-            incoming_tx,
-            outgoing_rx,
-            connection_activity_tx,
-            cx,
-        )
+        cx.spawn(async move |cx| {
+            // Creating a process can block for seconds on Windows, so it must
+            // not happen on the main thread.
+            let proxy_process = cx
+                .background_spawn(async move { proxy_command.spawn() })
+                .await
+                .context("failed to spawn remote server")?;
+
+            super::handle_rpc_messages_over_child_process_stdio(
+                proxy_process,
+                incoming_tx,
+                outgoing_rx,
+                connection_activity_tx,
+                cx,
+            )
+            .await
+        })
     }
 
     fn upload_directory(

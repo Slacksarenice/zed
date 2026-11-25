@@ -2551,7 +2551,11 @@ impl ShellExec {
                 process.stdin(Stdio::null());
             };
 
-            let Some(mut running) = process.spawn().log_err() else {
+            // Creating a process can block for seconds, e.g. on Windows while
+            // antivirus scans the program, and this task runs on the main
+            // thread.
+            let spawned = cx.background_spawn(async move { process.spawn() }).await;
+            let Some(mut running) = spawned.log_err() else {
                 vim.update_in(cx, |vim, window, cx| {
                     vim.cancel_running_command(window, cx);
                 })

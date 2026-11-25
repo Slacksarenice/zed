@@ -49,7 +49,7 @@ pub(super) struct StdioProcess {
     pub debug_log: AcpDebugLog,
 }
 
-pub(super) fn spawn_stdio(
+pub(super) async fn spawn_stdio(
     project: &Entity<Project>,
     command: AgentServerCommand,
     cx: &AsyncApp,
@@ -98,6 +98,14 @@ pub(super) fn spawn_stdio(
     }) {
         child.current_dir(cwd);
     }
+    // See `Child::spawn` for why only Windows creates the process in the
+    // background.
+    #[cfg(windows)]
+    let mut child = cx
+        .background_executor()
+        .spawn(async move { Child::spawn(child, Stdio::piped(), Stdio::piped(), Stdio::piped()) })
+        .await?;
+    #[cfg(not(windows))]
     let mut child = Child::spawn(child, Stdio::piped(), Stdio::piped(), Stdio::piped())?;
 
     let stdout = child.stdout.take().context("Failed to take stdout")?;
@@ -244,6 +252,7 @@ mod tests {
                 stderr,
                 debug_log,
             } = spawn_stdio(&project, command.clone(), &cx.to_async())
+                .await
                 .expect("spawn fresh transport");
             let stderr_task = cx.background_executor.spawn(stderr);
             let params = serde_json::json!({ "attempt": attempt });

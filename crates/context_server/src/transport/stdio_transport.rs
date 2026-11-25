@@ -25,7 +25,7 @@ pub struct StdioTransport {
 }
 
 impl StdioTransport {
-    pub fn new(
+    pub async fn new(
         binary: ModelContextServerBinary,
         working_directory: &Option<PathBuf>,
         cx: &AsyncApp,
@@ -42,6 +42,21 @@ impl StdioTransport {
             command.current_dir(working_directory);
         }
 
+        // See `Child::spawn` for why only Windows creates the process in the
+        // background.
+        #[cfg(windows)]
+        let mut server = cx
+            .background_executor()
+            .spawn(async move {
+                Child::spawn(
+                    command,
+                    std::process::Stdio::piped(),
+                    std::process::Stdio::piped(),
+                    std::process::Stdio::piped(),
+                )
+            })
+            .await?;
+        #[cfg(not(windows))]
         let mut server = Child::spawn(
             command,
             std::process::Stdio::piped(),

@@ -271,12 +271,16 @@ impl WslRunningKernel {
                 .arg("-c")
                 .arg(&shell_command);
 
-            let mut process = cmd
-                .stdout(util::command::Stdio::piped())
+            cmd.stdout(util::command::Stdio::piped())
                 .stderr(util::command::Stdio::piped())
                 .stdin(util::command::Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()
+                .kill_on_drop(true);
+            // Creating a process can block for seconds on Windows, and this
+            // task runs on the main thread.
+            let mut process = cx
+                .background_executor()
+                .spawn(async move { cmd.spawn() })
+                .await
                 .context("failed to start the kernel process")?;
 
             let session_id = Uuid::new_v4().to_string();

@@ -3081,15 +3081,20 @@ impl Session {
                     port_forwards.push((frontend_port, "localhost".to_owned(), frontend_port));
                 }
 
-                let child = remote_client.update(cx, |client, _| {
-                    let command = client.build_forward_ports_command(port_forwards)?;
-                    let child = new_command(command.program)
-                        .args(command.args)
-                        .envs(command.env)
-                        .spawn()
-                        .context("spawning port forwarding process")?;
-                    anyhow::Ok(child)
+                let command = remote_client.update(cx, |client, _| {
+                    client.build_forward_ports_command(port_forwards)
                 })?;
+                // Creating a process can block for seconds on Windows, and this
+                // task runs on the main thread.
+                let child = cx
+                    .background_spawn(async move {
+                        new_command(command.program)
+                            .args(command.args)
+                            .envs(command.env)
+                            .spawn()
+                    })
+                    .await
+                    .context("spawning port forwarding process")?;
                 Some(child)
             };
 
@@ -3289,16 +3294,22 @@ async fn spawn_companion(
         .to_string_lossy()
         .to_string();
 
-    let child = new_command(binary_path)
-        .arg(path)
-        .args([
-            format!("--listen=127.0.0.1:{port}"),
-            format!("--state={dir}"),
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    // Creating a process can block for seconds on Windows, and this runs on
+    // the main thread.
+    let child = cx
+        .background_spawn(async move {
+            new_command(binary_path)
+                .arg(path)
+                .args([
+                    format!("--listen=127.0.0.1:{port}"),
+                    format!("--state={dir}"),
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+        })
+        .await
         .context("spawning companion child process")?;
 
     Ok((port, child))

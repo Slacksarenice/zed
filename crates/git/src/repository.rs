@@ -3941,6 +3941,25 @@ impl GitBinary {
         )
     }
 
+    /// Spawns `command` for a job that deliberately stays off the background
+    /// executor (see `commit`, `push`, `pull` and `fetch`) and so may run on
+    /// the main thread. Creating a process can block for seconds on Windows,
+    /// so there that one step runs on the background executor. Other
+    /// platforms spawn in place.
+    async fn spawn_command(
+        &self,
+        mut command: util::command::Command,
+    ) -> std::io::Result<util::command::Child> {
+        #[cfg(target_os = "windows")]
+        {
+            self.executor.spawn(async move { command.spawn() }).await
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            command.spawn()
+        }
+    }
+
     async fn run_with_askpass(
         &self,
         delegate: AskPassDelegate,
@@ -3948,7 +3967,7 @@ impl GitBinary {
         mut command: util::command::Command,
     ) -> Result<RemoteCommandOutput> {
         if env.contains_key("GIT_ASKPASS") {
-            let git_process = command.spawn()?;
+            let git_process = self.spawn_command(command).await?;
             return remote_command_output(git_process.output().await?);
         }
 
@@ -3969,7 +3988,7 @@ impl GitBinary {
 
         #[cfg(target_os = "windows")]
         command.env("ZED_ASKPASS_SOCKET", ask_pass.socket_path());
-        let git_process = command.spawn()?;
+        let git_process = self.spawn_command(command).await?;
 
         run_askpass_command(ask_pass, git_process).await
     }

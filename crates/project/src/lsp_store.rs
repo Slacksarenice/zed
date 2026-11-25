@@ -2869,11 +2869,14 @@ impl LocalLspStore {
             }));
         }
 
-        let mut child = child
+        child
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped());
+        // Creating a process can block for seconds, e.g. on Windows while
+        // antivirus scans the formatter binary, and this runs on the main
+        // thread.
+        let mut child = cx.background_spawn(async move { child.spawn() }).await?;
 
         let stdin = child.stdin.as_mut().context("failed to acquire stdin")?;
         let text = buffer

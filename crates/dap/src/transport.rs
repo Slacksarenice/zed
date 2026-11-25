@@ -574,8 +574,18 @@ impl TcpTransport {
             command.args(&binary.arguments);
             command.envs(&binary.envs);
 
-            let mut p = Child::spawn(command, Stdio::null(), Stdio::piped(), Stdio::piped())
-                .with_context(|| "failed to start debug adapter.")?;
+            // See `Child::spawn` for why only Windows creates the process in
+            // the background.
+            #[cfg(windows)]
+            let spawned = cx
+                .background_executor()
+                .spawn(async move {
+                    Child::spawn(command, Stdio::null(), Stdio::piped(), Stdio::piped())
+                })
+                .await;
+            #[cfg(not(windows))]
+            let spawned = Child::spawn(command, Stdio::null(), Stdio::piped(), Stdio::piped());
+            let mut p = spawned.with_context(|| "failed to start debug adapter.")?;
 
             stdout_task = p.stdout.take().map(|stdout| {
                 cx.background_executor()
@@ -723,6 +733,16 @@ impl StdioTransport {
         command.args(&binary.arguments);
         command.envs(&binary.envs);
 
+        // See `Child::spawn` for why only Windows creates the process in the
+        // background.
+        #[cfg(windows)]
+        let mut process =
+            cx.background_executor()
+                .spawn(async move {
+                    Child::spawn(command, Stdio::piped(), Stdio::piped(), Stdio::piped())
+                })
+                .await?;
+        #[cfg(not(windows))]
         let mut process = Child::spawn(command, Stdio::piped(), Stdio::piped(), Stdio::piped())?;
 
         let _stderr_task = process.stderr.take().map(|stderr| {
