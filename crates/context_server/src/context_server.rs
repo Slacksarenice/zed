@@ -120,10 +120,10 @@ impl ContextServer {
     }
 
     pub async fn start(&self, cx: &AsyncApp) -> Result<()> {
-        self.initialize(self.new_client(cx)?).await
+        self.initialize(self.new_client(cx).await?).await
     }
 
-    fn new_client(&self, cx: &AsyncApp) -> Result<Client> {
+    async fn new_client(&self, cx: &AsyncApp) -> Result<Client> {
         Ok(match &self.configuration {
             ContextServerTransport::Stdio(command, working_directory, stdin_prefix) => {
                 Client::stdio(
@@ -137,7 +137,8 @@ impl ContextServer {
                     },
                     working_directory,
                     cx.clone(),
-                )?
+                )
+                .await?
             }
             ContextServerTransport::Custom(transport) => Client::new(
                 client::ContextServerId(self.id.0.clone()),

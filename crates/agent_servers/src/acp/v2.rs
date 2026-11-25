@@ -243,7 +243,7 @@ impl AcpV2Connection {
             outgoing,
             stderr,
             debug_log,
-        } = transport::spawn_stdio(&project, command, cx)?;
+        } = transport::spawn_stdio(&project, command, cx).await?;
         let mut child = transport::OwnedChild(child);
         let status = child.exit_status(installation_lease);
         let stderr_task = cx

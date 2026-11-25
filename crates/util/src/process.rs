@@ -29,6 +29,8 @@ impl std::ops::DerefMut for Child {
 }
 
 impl Child {
+    /// The child is not killed when it is dropped, so do not call this from a
+    /// task that can be cancelled before the caller owns the child.
     #[cfg(not(windows))]
     pub fn spawn(
         mut command: std::process::Command,
@@ -52,6 +54,10 @@ impl Child {
         Ok(Self { process })
     }
 
+    /// Creating a process on Windows can block for seconds: antivirus may scan
+    /// the executable first, and std serializes every `CreateProcessW` call in
+    /// the process behind one lock. Call this from a background task, not from
+    /// the main thread.
     #[cfg(windows)]
     pub fn spawn(
         command: std::process::Command,
